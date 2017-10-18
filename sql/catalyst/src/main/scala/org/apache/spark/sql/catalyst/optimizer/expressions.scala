@@ -630,3 +630,33 @@ object CombineConcats extends Rule[LogicalPlan] {
       flattenConcats(concat)
   }
 }
+
+object EliminateCaseWhen extends Rule[LogicalPlan] {
+  def combineConditions(caseWhen: CaseWhen, compare: Seq[Expression]): Expression = {
+    val branches = caseWhen.branches
+    val conditions = branches.collect {
+      case x if compare.exists(c => x._2.semanticEquals(c)) => x._1
+    }
+    if (conditions.nonEmpty) {
+      conditions.reduce((a, b) => Or(a, b))
+    } else {
+      caseWhen
+    }
+  }
+
+  def processCaseWhen(expr: Expression, compare: Seq[Expression], other: Expression): Expression = expr match {
+    case caseWhen @ CaseWhen(branches, _) if branches.forall(x => x._2.isInstanceOf[Literal]) =>
+      combineConditions(caseWhen, compare)
+    case _ => other
+  }
+
+  override def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    case q: LogicalPlan => q transformExpressionsUp {
+      case c @ EqualTo(left, right) if right.isInstanceOf[Literal] =>
+        processCaseWhen(left, Seq(right), c)
+      case i @ In(v, list) if list.forall(_.isInstanceOf[Literal]) =>
+        processCaseWhen(v, list, i)
+    }
+  }
+
+}
